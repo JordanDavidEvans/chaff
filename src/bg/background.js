@@ -29,7 +29,7 @@ let SeedService;
 let SeedServiceInitialized;
 
 // Setup event handlers
-chrome.browserAction.onClicked.addListener(() => {
+chrome.action.onClicked.addListener(() => {
   toggleProcessing();
 });
 
@@ -83,12 +83,13 @@ chrome.tabs.onUpdated.addListener((updatedTabId, changeInfo, tab) => {
   tabUpdated(tab);
 });
 
-window.addEventListener("storage", onStorageEvent, false);
+self.addEventListener("storage", onStorageEvent, false);
 
 init();
 
-function init() {
+async function init() {
   settings = new Store("settings", DEFAULTS);
+  await settings.ready;
 
   processingEnabled = settings.get("processingEnabled");
   processing = false;
@@ -170,7 +171,7 @@ function disableProcessing() {
 function startProcessing() {
   if (!processing) {
     processing = true;
-    chrome.browserAction.setBadgeText({ text: "On" });
+    chrome.action.setBadgeText({ text: "On" });
 
     console.log("Creating Tab...");
     // Create a new tab and store the Id for later use
@@ -187,7 +188,7 @@ function stopProcessing() {
   if (processing) {
     processing = false;
     currentTab = undefined;
-    chrome.browserAction.setBadgeText({ text: "" });
+    chrome.action.setBadgeText({ text: "" });
 
     // Clear Timeouts
     if (browsingTimeout) clearTimeout(browsingTimeout);
@@ -198,14 +199,27 @@ function stopProcessing() {
   }
 }
 
-function stopScript() {
+async function stopScript() {
   console.log("Stopping Script...");
-  chrome.tabs.executeScript(tabId, { code: "clearTimeout(newPageTimeout);" }, () => {
-    chrome.tabs.sendMessage(tabId, "StopScript", response => {
-      console.log("Inject Script Stopped: [" + response + "]");
-      killTab();
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        try {
+          clearTimeout(self.newPageTimeout);
+        } catch (e) {
+          /* Ignore */
+        }
+      }
     });
-  });
+
+    const response = await chrome.tabs.sendMessage(tabId, "StopScript").catch(() => undefined);
+    console.log("Inject Script Stopped: [" + response + "]");
+  } catch (e) {
+    console.log("Unable to stop script in tab [" + tabId + "]");
+  }
+
+  killTab();
 }
 
 function killTab() {
@@ -382,25 +396,25 @@ function getDomain(url) {
   return domain[0];
 }
 
-function inject() {
+async function inject() {
   console.log("Injecting into tab [" + tabId + "]");
   try {
-    chrome.tabs.executeScript(
-      tabId,
-      {
-        code:
-          "var scriptOptions = { timeBetweenClicksVariance: " +
-          settings.get("timeBetweenClicksVariance") +
-          ", maxTimeBetweenClicks: " +
-          settings.get("maxTimeBetweenClicks") +
-          " };",
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: options => {
+        // eslint-disable-next-line no-var
+        var scriptOptions = options;
       },
-      () => {
-        chrome.tabs.executeScript(tabId, { file: "src/inject/inject.js" }, () => {
-          saveHistory();
-        });
-      }
-    );
+      args: [
+        {
+          timeBetweenClicksVariance: settings.get("timeBetweenClicksVariance"),
+          maxTimeBetweenClicks: settings.get("maxTimeBetweenClicks"),
+        },
+      ],
+    });
+
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["src/inject/inject.js"] });
+    saveHistory();
   } catch (e) {
     // Let the Browse Timeout occur to handle this case
     console.log("!!Error occurred when trying to inject into tab.");
