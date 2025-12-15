@@ -4,29 +4,114 @@
 // License: MIT-license
 //
 (function () {
-    var Store = this.Store = function (name, defaults) {
-        var key;
-        this.name = name;
-        
-        if (defaults !== undefined) {
-            for (key in defaults) {
-                if (defaults.hasOwnProperty(key) && this.get(key) === undefined) {
-                    this.set(key, defaults[key]);
+    var storageCache = {};
+    var hasChromeStorage = (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local);
+    var storageReady = new Promise(function (resolve) {
+        if (!hasChromeStorage) {
+            resolve();
+            return;
+        }
+
+        chrome.storage.local.get(null, function (items) {
+            storageCache = items || {};
+            resolve();
+        });
+    });
+
+    if (hasChromeStorage) {
+        chrome.storage.onChanged.addListener(function (changes, areaName) {
+            if (areaName !== "local") { return; }
+
+            for (var key in changes) {
+                if (changes.hasOwnProperty(key)) {
+                    if (changes[key].newValue === undefined) {
+                        delete storageCache[key];
+                    } else {
+                        storageCache[key] = changes[key].newValue;
+                    }
+                }
+            }
+        });
+    }
+
+    function buildKey(name, key) {
+        return "store." + name + "." + key;
+    }
+
+    function getItem(key) {
+        if (hasChromeStorage) {
+            if (!storageCache.hasOwnProperty(key)) { return null; }
+            return storageCache[key];
+        }
+
+        return localStorage.getItem(key);
+    }
+
+    function setItem(key, value) {
+        if (hasChromeStorage) {
+            storageCache[key] = value;
+            chrome.storage.local.set((function () { var obj = {}; obj[key] = value; return obj; })());
+            return;
+        }
+
+        localStorage.setItem(key, value);
+    }
+
+    function removeItem(key) {
+        if (hasChromeStorage) {
+            delete storageCache[key];
+            chrome.storage.local.remove(key);
+            return;
+        }
+
+        localStorage.removeItem(key);
+    }
+
+    function listKeys(prefix) {
+        var keys = [];
+
+        if (hasChromeStorage) {
+            for (var key in storageCache) {
+                if (storageCache.hasOwnProperty(key) && key.substring(0, prefix.length) === prefix) {
+                    keys.push(key);
+                }
+            }
+        } else {
+            for (var i = (localStorage.length - 1); i >= 0; i--) {
+                if (localStorage.key(i).substring(0, prefix.length) === prefix) {
+                    keys.push(localStorage.key(i));
                 }
             }
         }
+
+        return keys;
+    }
+
+    var Store = this.Store = function (name, defaults) {
+        var key;
+        this.name = name;
+        this.ready = storageReady.then(function () {
+            if (defaults !== undefined) {
+                for (key in defaults) {
+                    if (defaults.hasOwnProperty(key) && this.get(key) === undefined) {
+                        this.set(key, defaults[key]);
+                    }
+                }
+            }
+        }.bind(this));
     };
-    
+
     Store.prototype.get = function (name) {
-        name = "store." + this.name + "." + name;
-        if (localStorage.getItem(name) === null) { return undefined; }
+        name = buildKey(this.name, name);
+        var raw = getItem(name);
+        if (raw === null || raw === undefined) { return undefined; }
         try {
-            return JSON.parse(localStorage.getItem(name));
+            return JSON.parse(raw);
         } catch (e) {
             return null;
         }
     };
-    
+
     Store.prototype.set = function (name, value) {
         if (value === undefined) {
             this.remove(name);
@@ -40,52 +125,48 @@
                     value = null;
                 }
             }
-            
-            localStorage.setItem("store." + this.name + "." + name, value);
+
+            setItem(buildKey(this.name, name), value);
         }
-        
+
         return this;
     };
-    
+
     Store.prototype.remove = function (name) {
-        localStorage.removeItem("store." + this.name + "." + name);
+        removeItem(buildKey(this.name, name));
         return this;
     };
-    
+
     Store.prototype.removeAll = function () {
-        var name,
-            i;
-        
-        name = "store." + this.name + ".";
-        for (i = (localStorage.length - 1); i >= 0; i--) {
-            if (localStorage.key(i).substring(0, name.length) === name) {
-                localStorage.removeItem(localStorage.key(i));
-            }
+        var name = "store." + this.name + ".";
+        var keys = listKeys(name);
+
+        for (var i = (keys.length - 1); i >= 0; i--) {
+            removeItem(keys[i]);
         }
-        
+
         return this;
     };
-    
+
     Store.prototype.toObject = function () {
-        var values,
+        var values = {},
             name,
-            i,
             key,
-            value;
-        
-        values = {};
+            value,
+            keys,
+            i;
+
         name = "store." + this.name + ".";
-        for (i = (localStorage.length - 1); i >= 0; i--) {
-            if (localStorage.key(i).substring(0, name.length) === name) {
-                key = localStorage.key(i).substring(name.length);
-                value = this.get(key);
-                if (value !== undefined) { values[key] = value; }
-            }
+        keys = listKeys(name);
+        for (i = (keys.length - 1); i >= 0; i--) {
+            key = keys[i].substring(name.length);
+            value = this.get(key);
+            if (value !== undefined) { values[key] = value; }
         }
-        
+
         return values;
     };
-    
+
     Store.prototype.fromObject = function (values, merge) {
         if (merge !== true) { this.removeAll(); }
         for (var key in values) {
@@ -93,7 +174,7 @@
                 this.set(key, values[key]);
             }
         }
-        
+
         return this;
     };
 }());
